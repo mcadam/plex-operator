@@ -1,0 +1,16 @@
+apiVersion: plex.tv/v1alpha1
+kind: PlexTranscodeJob
+metadata:
+  name: plex-transcode-job
+spec:
+  args:
+  - hello
+  - world
+  env:
+  - hello
+  - world
+  cwd: /test/path
+status:
+  state: CREATED
+  transcoder: ""
+  error: ""
