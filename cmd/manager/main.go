@@ -44,16 +44,20 @@ func printVersion() {
 	log.Info(fmt.Sprintf("Version of operator-sdk: %v", sdkVersion.Version))
 }
 
+var component = os.Getenv("PLEX_OPERATOR_COMPONENT")
+
 func main() {
-	// Add the zap logger flag set to the CLI. The flag set must
-	// be added before calling pflag.Parse().
-	pflag.CommandLine.AddFlagSet(zap.FlagSet())
+	if component == "operator" {
+		// Add the zap logger flag set to the CLI. The flag set must
+		// be added before calling pflag.Parse().
+		pflag.CommandLine.AddFlagSet(zap.FlagSet())
 
-	// Add flags registered by imported packages (e.g. glog and
-	// controller-runtime)
-	pflag.CommandLine.AddGoFlagSet(flag.CommandLine)
+		// Add flags registered by imported packages (e.g. glog and
+		// controller-runtime)
+		pflag.CommandLine.AddGoFlagSet(flag.CommandLine)
 
-	pflag.Parse()
+		pflag.Parse()
+	}
 
 	// Use a zap logr.Logger implementation. If none of the zap
 	// flags are configured (or if the zap flag set is not being
@@ -81,11 +85,13 @@ func main() {
 	}
 
 	ctx := context.TODO()
-	// Become the leader before proceeding
-	err = leader.Become(ctx, "plex-operator-lock")
-	if err != nil {
-		log.Error(err, "")
-		os.Exit(1)
+	if component == "operator" {
+		// Become the leader before proceeding
+		err = leader.Become(ctx, "plex-operator-lock")
+		if err != nil {
+			log.Error(err, "")
+			os.Exit(1)
+		}
 	}
 
 	// Create a new Cmd to provide shared dependencies and start components

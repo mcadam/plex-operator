@@ -220,7 +220,7 @@ func generateIdleTranscoderPod(ptj *plexv1alpha1.PlexTranscodeJob) *corev1.Pod {
 			Labels:    labels,
 		},
 		Spec: corev1.PodSpec{
-			ServiceAccountName: "plex-kube-plex",
+			ServiceAccountName: "plex",
 			Volumes: []corev1.Volume{
 				{
 					Name: "data",
@@ -360,10 +360,11 @@ func rewriteEnv(in []string) {
 
 // rewriteArgs rewrites command args to be passed to the transcoder
 func rewriteArgs(in []string) {
+	// TODO get service name
 	for i, v := range in {
 		switch v {
 		case "-progressurl", "-manifest_name", "-segment_list":
-			in[i+1] = strings.Replace(in[i+1], "http://127.0.0.1:32400", "http://plex-kube-plex:32400", 1)
+			in[i+1] = strings.Replace(in[i+1], "http://127.0.0.1:32400", "http://plex:32400", 1)
 		case "-loglevel", "-loglevel_plex":
 			in[i+1] = "debug"
 		}
