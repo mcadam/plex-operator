@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	plexv1alpha1 "github.com/mcadam/plex-operator/pkg/apis/plex/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -28,9 +29,8 @@ var log = logf.Log.WithName("controller_plextranscodejob")
 var workerQueue []string
 // How many idle workers
 var idleWorkers = 1
-var component = os.Getenv("PLEX_OPERATOR_COMPONENT")
 var namespace = os.Getenv("WATCH_NAMESPACE")
-
+var component = os.Getenv("PLEX_OPERATOR_COMPONENT")
 
 // Add creates a new PlexTranscodeJob Controller and adds it to the Manager. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
@@ -46,13 +46,24 @@ func newReconciler(mgr manager.Manager) reconcile.Reconciler {
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
 func add(mgr manager.Manager, r reconcile.Reconciler) error {
 
+	// Default to component operator
+	if len(component) == 0 {
+		component = "operator"
+	}
+
 	// Create a new PlexTranscode Job on start if executor component
 	if component == "executor" {
+		log.Info("Creating PlexTranscodeJob...")
 		err := createPlexTranscodeJob(mgr.GetClient())
 		if err != nil {
 			log.Error(err, "Error creating PlexTranscodeJob")
 			return err
 		}
+		// Need to sleep, if we exit directly the transcoder pod might not have
+		// ack back to the server yet and the server will start a new transcoder
+		time.Sleep(30 * time.Second)
+		log.Info("Exiting executor...")
+		os.Exit(0)
 	}
 
 	// Create a new controller
@@ -118,6 +129,11 @@ func (r *ReconcilePlexTranscodeJob) Reconcile(request reconcile.Request) (reconc
 		"Error", ptj.Status.Error,
 	)
 
+	// Default to operator component
+	if len(component) == 0 {
+		component = "operator"
+	}
+
 	// Reconcile business logic according to component type
 	switch component {
 	case "executor":
@@ -131,7 +147,6 @@ func (r *ReconcilePlexTranscodeJob) Reconcile(request reconcile.Request) (reconc
 }
 
 func (r *ReconcilePlexTranscodeJob) ReconcileExecutor(ptj *plexv1alpha1.PlexTranscodeJob) (reconcile.Result, error) {
-	// TODO watch PlexTranscodeJob COMPLETED and delete them
 	return reconcile.Result{}, nil
 }
 
@@ -148,6 +163,12 @@ func (r *ReconcilePlexTranscodeJob) ReconcileTranscoder(ptj *plexv1alpha1.PlexTr
 		}
 		// Run Plex Transcoder
 		ptj.Status.State, ptj.Status.Error = runPlexTranscoder(ptj)
+		err = r.client.Update(context.TODO(), ptj)
+		if err != nil {
+			log.Error(err, "Failed to update PlexTranscodeJob status")
+			return reconcile.Result{}, err
+		}
+		os.Exit(0)
 	}
 	return reconcile.Result{}, nil
 }
@@ -169,6 +190,16 @@ func (r *ReconcilePlexTranscodeJob) ReconcileOperator(ptj *plexv1alpha1.PlexTran
 			workerQueue = append(workerQueue, pod.Name)
 		}
 		return reconcile.Result{Requeue: true}, nil
+	}
+
+	// Cleanup completed / failed jobs
+	if ptj.Status.State == plexv1alpha1.PlexTranscodeStateCompleted || ptj.Status.State == plexv1alpha1.PlexTranscodeStateFailed {
+		log.Info("PlexTranscodeJob completed or failed, up for deletion")
+		err := r.client.Delete(context.TODO(), ptj)
+		if err != nil {
+			log.Error(err, "Failed to delete PlexTranscodeJob")
+			return reconcile.Result{}, err
+		}
 	}
 
 	// Assign idle transcoder Pod if ptj state is CREATED
@@ -215,12 +246,13 @@ func generateIdleTranscoderPod(ptj *plexv1alpha1.PlexTranscodeJob) *corev1.Pod {
 	}
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			GenerateName:      ptj.Name + "-",
+			GenerateName: "plex-transcoder-",
 			Namespace: ptj.Namespace,
 			Labels:    labels,
 		},
 		Spec: corev1.PodSpec{
 			ServiceAccountName: "plex",
+			RestartPolicy: corev1.RestartPolicyNever,
 			Volumes: []corev1.Volume{
 				{
 					Name: "data",

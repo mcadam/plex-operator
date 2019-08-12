@@ -47,6 +47,10 @@ func printVersion() {
 var component = os.Getenv("PLEX_OPERATOR_COMPONENT")
 
 func main() {
+	// Default to component operator
+	if len(component) == 0 {
+		component = "operator"
+	}
 	if component == "operator" {
 		// Add the zap logger flag set to the CLI. The flag set must
 		// be added before calling pflag.Parse().
