@@ -14,6 +14,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -78,7 +79,6 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		return err
 	}
 
-	// TODO(user): Modify this to be the types you create that are owned by the primary resource
 	// Watch for changes to secondary resource Pods and requeue the owner PlexTranscodeJob
 	err = c.Watch(&source.Kind{Type: &corev1.Pod{}}, &handler.EnqueueRequestForOwner{
 		IsController: true,
@@ -178,9 +178,17 @@ func (r *ReconcilePlexTranscodeJob) ReconcileOperator(ptj *plexv1alpha1.PlexTran
 	log.Info("Idle workers queue status", "Queue.Length", len(workerQueue), "Queue.Pods", workerQueue)
 	missing := idleWorkers - len(workerQueue)
 	if missing > 0 {
+		// Fetch the PlexMediaServer pod instance
+		podList := &corev1.PodList{}
+		labelSelector := labels.SelectorFromSet(labelsForPlexMediaServer())
+		listOps := &client.ListOptions{Namespace: ptj.Namespace, LabelSelector: labelSelector}
+		if err := r.client.List(context.TODO(), listOps, podList); err != nil {
+			return reconcile.Result{}, err
+		}
+
 		// Create missing idle transcoder pods
 		for i := 0; i < missing; i++ {
-			pod := generateIdleTranscoderPod(ptj)
+			pod := generateIdleTranscoderPod(ptj, podList)
 			log.Info("Creating a new idle transcoder Pod", "Pod.Namespace", pod.Namespace, "Pod.Name", pod.Name)
 			err := r.client.Create(context.TODO(), pod)
 			if err != nil {
@@ -239,7 +247,27 @@ func (r *ReconcilePlexTranscodeJob) ReconcileOperator(ptj *plexv1alpha1.PlexTran
 
 // generateIdleTranscoderPod returns a Pod with Plex server and
 // this controller to listen to events on PlexTranscodeJobs
-func generateIdleTranscoderPod(ptj *plexv1alpha1.PlexTranscodeJob) *corev1.Pod {
+func generateIdleTranscoderPod(ptj *plexv1alpha1.PlexTranscodeJob, pmsPodList *corev1.PodList) *corev1.Pod {
+	// Get volumes from pms pod
+	var volumes = []corev1.Volume{
+		{
+			Name: "shared",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		},
+	}
+	var volumeMounts = []corev1.VolumeMount{
+		{
+			Name:      "shared",
+			MountPath: "/shared",
+		},
+	}
+	for _, pod := range pmsPodList.Items {
+		volumes = pod.Spec.Volumes
+		volumeMounts = pod.Spec.Containers[0].VolumeMounts
+	}
+
 	labels := map[string]string{
 		"app": ptj.Name,
 		"component": "transcoder",
@@ -253,36 +281,7 @@ func generateIdleTranscoderPod(ptj *plexv1alpha1.PlexTranscodeJob) *corev1.Pod {
 		Spec: corev1.PodSpec{
 			ServiceAccountName: "plex",
 			RestartPolicy: corev1.RestartPolicyNever,
-			Volumes: []corev1.Volume{
-				{
-					Name: "data",
-					VolumeSource: corev1.VolumeSource{
-						HostPath: &corev1.HostPathVolumeSource{
-							Path: "/mnt/gdrive",
-						},
-					},
-				},
-				{
-					Name: "config",
-					VolumeSource: corev1.VolumeSource{
-						HostPath: &corev1.HostPathVolumeSource{
-							Path: "/mnt/plex-lab",
-						},
-					},
-				},
-				{
-					Name: "transcode",
-					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{},
-					},
-				},
-				{
-					Name: "shared",
-					VolumeSource: corev1.VolumeSource{
-						EmptyDir: &corev1.EmptyDirVolumeSource{},
-					},
-				},
-			},
+			Volumes: volumes,
 			InitContainers: []corev1.Container{
 				{
 					Name:    "init-plex-transcoder",
@@ -309,25 +308,7 @@ func generateIdleTranscoderPod(ptj *plexv1alpha1.PlexTranscodeJob) *corev1.Pod {
 						"/shared/plex-operator",
 					},
 					ImagePullPolicy: corev1.PullAlways,
-					VolumeMounts: []corev1.VolumeMount{
-						{
-							Name:      "data",
-							MountPath: "/data",
-							SubPath: "media",
-						},
-						{
-							Name:      "config",
-							MountPath: "/config",
-						},
-						{
-							Name:      "transcode",
-							MountPath: "/transcode",
-						},
-						{
-							Name:      "shared",
-							MountPath: "/shared",
-						},
-					},
+					VolumeMounts: volumeMounts,
 					Env: []corev1.EnvVar{
 						{
 							Name: "PLEX_OPERATOR_COMPONENT",
@@ -392,11 +373,11 @@ func rewriteEnv(in []string) {
 
 // rewriteArgs rewrites command args to be passed to the transcoder
 func rewriteArgs(in []string) {
-	// TODO get service name
+	pmsInternalAddress := os.Getenv("PMS_INTERNAL_ADDRESS")
 	for i, v := range in {
 		switch v {
 		case "-progressurl", "-manifest_name", "-segment_list":
-			in[i+1] = strings.Replace(in[i+1], "http://127.0.0.1:32400", "http://plex:32400", 1)
+			in[i+1] = strings.Replace(in[i+1], "http://127.0.0.1:32400", pmsInternalAddress, 1)
 		case "-loglevel", "-loglevel_plex":
 			in[i+1] = "debug"
 		}
@@ -434,4 +415,8 @@ func createPlexTranscodeJob(c client.Client) error {
 	}
 	ptj := generatePlexTranscodeJob(cwd, env, args)
 	return c.Create(context.TODO(), ptj)
+}
+// labelsForApp creates a simple set of labels for App.
+func labelsForPlexMediaServer() map[string]string {
+	return map[string]string{"component": "executor"}
 }
