@@ -263,9 +263,12 @@ func generateIdleTranscoderPod(ptj *plexv1alpha1.PlexTranscodeJob, pmsPodList *c
 			MountPath: "/shared",
 		},
 	}
+	var serviceAccount = "plex"
+
 	for _, pod := range pmsPodList.Items {
 		volumes = pod.Spec.Volumes
 		volumeMounts = pod.Spec.Containers[0].VolumeMounts
+		serviceAccount = pod.Spec.ServiceAccountName
 	}
 
 	labels := map[string]string{
@@ -279,7 +282,7 @@ func generateIdleTranscoderPod(ptj *plexv1alpha1.PlexTranscodeJob, pmsPodList *c
 			Labels:    labels,
 		},
 		Spec: corev1.PodSpec{
-			ServiceAccountName: "plex",
+			ServiceAccountName: serviceAccount,
 			RestartPolicy: corev1.RestartPolicyNever,
 			Volumes: volumes,
 			InitContainers: []corev1.Container{
