@@ -1,7 +1,6 @@
 module github.com/mcadam/plex-operator
 
 require (
-	github.com/NYTimes/gziphandler v1.0.1 // indirect
 	github.com/operator-framework/operator-sdk v0.9.1-0.20190808170640-ae7fab6fc301
 	github.com/spf13/pflag v1.0.3
 	k8s.io/api v0.0.0-20190612125737-db0771252981
@@ -28,3 +27,5 @@ replace (
 )
 
 replace github.com/operator-framework/operator-sdk => github.com/operator-framework/operator-sdk v0.9.0
+
+go 1.13

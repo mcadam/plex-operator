@@ -12,9 +12,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -26,12 +26,15 @@ import (
 )
 
 var log = logf.Log.WithName("controller_plextranscodejob")
+
 // Queue to hold idle workers pod name
 var workerQueue []string
+
 // How many idle workers
 var idleWorkers = 1
 var namespace = os.Getenv("WATCH_NAMESPACE")
 var component = os.Getenv("PLEX_OPERATOR_COMPONENT")
+var configTranscoderPVC = os.Getenv("CONFIG_TRANSCODER_PVC")
 
 // Add creates a new PlexTranscodeJob Controller and adds it to the Manager. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
@@ -146,10 +149,12 @@ func (r *ReconcilePlexTranscodeJob) Reconcile(request reconcile.Request) (reconc
 	return reconcile.Result{}, nil
 }
 
+// ReconcileExecutor nothing to do
 func (r *ReconcilePlexTranscodeJob) ReconcileExecutor(ptj *plexv1alpha1.PlexTranscodeJob) (reconcile.Result, error) {
 	return reconcile.Result{}, nil
 }
 
+// ReconcileTranscoder reconcile transcoder component
 func (r *ReconcilePlexTranscodeJob) ReconcileTranscoder(ptj *plexv1alpha1.PlexTranscodeJob) (reconcile.Result, error) {
 	// Recognize pood running as assigned to a PlexTranscodeJob
 	if ptj.Status.State == plexv1alpha1.PlexTranscodeStateAssigned && ptj.Status.Transcoder == os.Getenv("POD_NAME") {
@@ -173,6 +178,7 @@ func (r *ReconcilePlexTranscodeJob) ReconcileTranscoder(ptj *plexv1alpha1.PlexTr
 	return reconcile.Result{}, nil
 }
 
+// ReconcileOperator reconcile operator
 func (r *ReconcilePlexTranscodeJob) ReconcileOperator(ptj *plexv1alpha1.PlexTranscodeJob) (reconcile.Result, error) {
 	// Check idle transcoder pods queue
 	log.Info("Idle workers queue status", "Queue.Length", len(workerQueue), "Queue.Pods", workerQueue)
@@ -213,7 +219,7 @@ func (r *ReconcilePlexTranscodeJob) ReconcileOperator(ptj *plexv1alpha1.PlexTran
 	// Assign idle transcoder Pod if ptj state is CREATED
 	if ptj.Status.State == plexv1alpha1.PlexTranscodeStateCreated {
 		var podName string
-		podName= workerQueue[0]
+		podName = workerQueue[0]
 		found := &corev1.Pod{}
 		err := r.client.Get(context.TODO(), types.NamespacedName{Name: podName, Namespace: ptj.Namespace}, found)
 		// If not found we loop again to create new idle transcoder and retry
@@ -269,26 +275,38 @@ func generateIdleTranscoderPod(ptj *plexv1alpha1.PlexTranscodeJob, pmsPodList *c
 		volumes = pod.Spec.Volumes
 		volumeMounts = pod.Spec.Containers[0].VolumeMounts
 		serviceAccount = pod.Spec.ServiceAccountName
+		if configTranscoderPVC != "" {
+			for index, volume := range volumes {
+				if volume.Name == "config" {
+					volumes[index].VolumeSource = corev1.VolumeSource{
+						PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+							ClaimName: configTranscoderPVC,
+						},
+					}
+				}
+			}
+
+		}
 	}
 
 	labels := map[string]string{
-		"app": ptj.Name,
+		"app":       ptj.Name,
 		"component": "transcoder",
 	}
 	return &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "plex-transcoder-",
-			Namespace: ptj.Namespace,
-			Labels:    labels,
+			Namespace:    ptj.Namespace,
+			Labels:       labels,
 		},
 		Spec: corev1.PodSpec{
 			ServiceAccountName: serviceAccount,
-			RestartPolicy: corev1.RestartPolicyNever,
-			Volumes: volumes,
+			RestartPolicy:      corev1.RestartPolicyNever,
+			Volumes:            volumes,
 			InitContainers: []corev1.Container{
 				{
-					Name:    "init-plex-transcoder",
-					Image:   "mcadm/plex-operator:v0.0.1",
+					Name:  "init-plex-transcoder",
+					Image: "mcadm/plex-operator:v0.0.2",
 					Command: []string{
 						"cp",
 						"/plex-operator",
@@ -305,16 +323,16 @@ func generateIdleTranscoderPod(ptj *plexv1alpha1.PlexTranscodeJob, pmsPodList *c
 			},
 			Containers: []corev1.Container{
 				{
-					Name:    "plex-transcoder",
-					Image:   "linuxserver/plex:latest",
+					Name:  "plex-transcoder",
+					Image: "linuxserver/plex:latest",
 					Command: []string{
 						"/shared/plex-operator",
 					},
 					ImagePullPolicy: corev1.PullAlways,
-					VolumeMounts: volumeMounts,
+					VolumeMounts:    volumeMounts,
 					Env: []corev1.EnvVar{
 						{
-							Name: "PLEX_OPERATOR_COMPONENT",
+							Name:  "PLEX_OPERATOR_COMPONENT",
 							Value: "transcoder",
 						},
 						{
@@ -391,17 +409,17 @@ func generatePlexTranscodeJob(cwd string, env []string, args []string) *plexv1al
 	return &plexv1alpha1.PlexTranscodeJob{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "plex-transcoder-",
-			Namespace: namespace,
+			Namespace:    namespace,
 		},
 		Spec: plexv1alpha1.PlexTranscodeJobSpec{
 			Args: args,
-			Env: env,
-			Cwd: cwd,
+			Env:  env,
+			Cwd:  cwd,
 		},
 		Status: plexv1alpha1.PlexTranscodeJobStatus{
-			State: plexv1alpha1.PlexTranscodeStateCreated,
+			State:      plexv1alpha1.PlexTranscodeStateCreated,
 			Transcoder: "",
-			Error: "",
+			Error:      "",
 		},
 	}
 }
@@ -419,6 +437,7 @@ func createPlexTranscodeJob(c client.Client) error {
 	ptj := generatePlexTranscodeJob(cwd, env, args)
 	return c.Create(context.TODO(), ptj)
 }
+
 // labelsForApp creates a simple set of labels for App.
 func labelsForPlexMediaServer() map[string]string {
 	return map[string]string{"component": "executor"}
